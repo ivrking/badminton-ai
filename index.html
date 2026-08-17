@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v10</title>
+  <title>AI 羽球自學架拍偵測器 v11</title>
   
-  <!-- 100% 複製 Danny 教練網站所使用的最穩定、絕不卡死的手機專用套件庫 -->
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+  <!-- 棄用任何容易卡死加載條的套件，改用載入速度最快、獨立自主的 p5 與 ml5 基礎庫 -->
+  <script src="https://cloudflare.com"></script>
+  <script src="https://cloudflare.com"></script>
 
   <style>
     body {
@@ -31,30 +31,9 @@
     }
     .data-box { text-align: center; font-size: 0.9rem; }
     .data-box span { display: block; font-size: 1.5rem; font-weight: bold; color: #ffeb3b; }
-    #video-container {
-      position: relative;
-      width: 100%;
-      max-width: 480px;
+    #canvas-holder {
       border-radius: 12px;
       overflow: hidden;
-      background-color: #000;
-    }
-    /* 【核心修正】絕對不隱藏 video！直接讓原生相機鋪底，避開 iOS 的安全封鎖機制 */
-    #webcam {
-      width: 100%;
-      height: auto;
-      transform: scaleX(-1); /* 鏡像翻轉 */
-      display: block;
-    }
-    /* 畫布純粹用來疊加綠線，絕對不處理相機渲染 */
-    #output_canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      transform: scaleX(-1); /* 保持同步鏡像 */
-      pointer-events: none; /* 讓點擊穿透 */
     }
     #status-msg {
       margin: 5px 0;
@@ -66,7 +45,7 @@
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v10</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v11</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -74,27 +53,24 @@
     <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在載入 AI 大腦...</div>
+  <div id="status-msg">系統啟動中，請稍候...</div>
 
-  <div id="video-container">
-    <video id="webcam" autoplay playsinline muted></video>
-    <canvas id="output_canvas"></canvas>
-  </div>
+  <div id="canvas-holder"></div>
 
   <script>
-    const videoElement = document.getElementById('webcam');
-    const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d');
+    let video;
+    let poseNet;
+    let poses = [];
     
+    let score = 0;
+    let isCorrecting = false;
+    let correctStartTime = null;
+    const HOLD_TIME = 1000;
+
     const scoreVal = document.getElementById('score-val');
     const leftAngleTxt = document.getElementById('left-angle');
     const rightAngleTxt = document.getElementById('right-angle');
     const statusMsg = document.getElementById('status-msg');
-
-    let score = 0;
-    let isCorrecting = false;
-    let correctStartTime = null;
-    const HOLD_TIME = 1000; 
 
     function speak(text) {
       if ('speechSynthesis' in window) {
@@ -107,63 +83,74 @@
     }
 
     function calculateAngle(A, B, C) {
-      const radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
+      let radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
       let angle = Math.abs((radians * 180.0) / Math.PI);
       if (angle > 180.0) angle = 360 - angle;
       return Math.round(angle);
     }
 
-    function drawLine(pt1, pt2) {
-      if (!pt1 || !pt2) return;
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(pt1.x * canvasElement.width, pt1.y * canvasElement.height);
-      canvasCtx.lineTo(pt2.x * canvasElement.width, pt2.y * canvasElement.height);
-      canvasCtx.strokeStyle = '#00FF00';
-      canvasCtx.lineWidth = 4;
-      canvasCtx.stroke();
+    function setup() {
+      // 建立畫布並放入指定容器，確保網頁結構第一時間能正常顯示
+      const canvas = createCanvas(480, 360);
+      canvas.parent('canvas-holder');
+      
+      // 啟動相機，此行語法在 p5.js 中最不容易被 iOS 阻斷
+      video = createCapture(VIDEO);
+      video.size(480, 360);
+      video.hide(); 
+
+      statusMsg.innerText = "相機已開啟，正在接通 AI 大腦...";
+
+      // 使用單一獨立回呼，避免任何多餘的外部連線
+      poseNet = ml5.poseNet(video, function() {
+        statusMsg.innerText = "AI 載入成功！請舉手架拍測試";
+      });
+      
+      poseNet.on('pose', function(results) {
+        poses = results;
+      });
     }
 
-    // 當 AI 成功抓到骨架時
-    function onResults(results) {
-      statusMsg.innerText = "請面向鏡頭舉手架拍";
-      
-      // 同步畫布與原生影片的尺寸（防位移）
-      canvasElement.width = videoElement.videoWidth;
-      canvasElement.height = videoElement.videoHeight;
+    function draw() {
+      // 先繪製鏡像鏡頭畫面
+      translate(width, 0);
+      scale(-1, 1);
+      image(video, 0, 0, width, height);
+      scale(-1, 1);
+      translate(-width, 0);
 
-      // 每次清空畫布，只畫綠色的骨架線
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
-      if (results.poseLandmarks) {
-        const lm = results.poseLandmarks;
+      if (poses.length > 0) {
+        let pose = poses[0].pose;
         
-        // 撈出關鍵點 (11左肩, 12右肩, 13左肘, 14右肘, 15左腕, 16右腕)
-        const leftShoulder = lm[11];
-        const rightShoulder = lm[12];
-        const leftElbow = lm[13];
-        const rightElbow = lm[14];
-        const leftWrist = lm[15];
-        const rightWrist = lm[16];
+        let leftShoulder = pose.leftShoulder;
+        let leftElbow = pose.leftElbow;
+        let leftWrist = pose.leftWrist;
+        let rightShoulder = pose.rightShoulder;
+        let rightElbow = pose.rightElbow;
+        let rightWrist = pose.rightWrist;
 
-        // 繪製骨架
-        drawLine(leftShoulder, leftElbow);
-        drawLine(leftElbow, leftWrist);
-        drawLine(rightShoulder, rightElbow);
-        drawLine(rightElbow, rightWrist);
-        drawLine(leftShoulder, rightShoulder);
+        if (leftShoulder.confidence > 0.2 && leftElbow.confidence > 0.2 && leftWrist.confidence > 0.2 &&
+            rightShoulder.confidence > 0.2 && rightElbow.confidence > 0.2 && rightWrist.confidence > 0.2) {
+          
+          stroke(0, 255, 0);
+          strokeWeight(4);
+          line(width - leftShoulder.x, leftShoulder.y, width - leftElbow.x, leftElbow.y);
+          line(width - leftElbow.x, leftElbow.y, width - leftWrist.x, leftWrist.y);
+          line(width - rightShoulder.x, rightShoulder.y, width - rightElbow.x, rightElbow.y);
+          line(width - rightElbow.x, rightElbow.y, width - rightWrist.x, rightWrist.y);
+          line(width - leftShoulder.x, leftShoulder.y, width - rightShoulder.x, rightShoulder.y);
 
-        if (leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
-          const leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
-          const rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
+          let leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
+          let rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
 
           leftAngleTxt.innerText = leftAngle + "°";
           rightAngleTxt.innerText = rightAngle + "°";
 
-          // 巢狀安全判斷結構
-          if (leftAngle >= 70) {
-            if (leftAngle <= 115) {
-              if (rightAngle >= 70) {
-                if (rightAngle <= 115) {
+          // 使用巢狀安全判斷結構
+          if (leftAngle >= 65) {
+            if (leftAngle <= 120) {
+              if (rightAngle >= 65) {
+                if (rightAngle <= 120) {
                   statusMsg.innerText = "姿勢正確！請維持住...";
                   statusMsg.style.color = "#4caf50";
 
@@ -190,34 +177,6 @@
       correctStartTime = null;
       statusMsg.style.color = "#ff5722";
     }
-
-    // 【核心修正】使用與對方完全一致的 MediaPipe Pose 初始化參數
-    const pose = new Pose({
-      locateFile: (file) => `https://jsdelivr.net{file}`
-    });
-
-    pose.setOptions({
-      modelComplexity: 0, // 0 速度最快，專為手機優化
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-    pose.onResults(onResults);
-
-    // 【核心修正】利用 MediaPipe 官方最穩定、能強制喚醒 iOS 原生鏡頭的 Camera 工具
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await pose.send({ image: videoElement });
-      }
-    });
-
-    // 啟動相機
-    camera.start().then(() => {
-      statusMsg.innerText = "相機已啟動，載入模型中...";
-    }).catch(err => {
-      statusMsg.innerText = "相機啟動失敗，請清除授權紀錄再試！";
-      console.error(err);
-    });
   </script>
 </body>
 </html>
