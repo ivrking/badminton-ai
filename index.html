@@ -3,13 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v9</title>
+  <title>AI 羽球自學架拍偵測器 v10</title>
   
-  <!-- 改用極速獨立加載、不依賴外部大模型的 BlazePose 直導流套件 -->
-  <script src="https://jsdelivr.net"></script>
-  <script src="https://jsdelivr.net"></script>
-  <script src="https://jsdelivr.net"></script>
-  <script src="https://jsdelivr.net"></script>
+  <!-- 100% 複製 Danny 教練網站所使用的最穩定、絕不卡死的手機專用套件庫 -->
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
 
   <style>
     body {
@@ -39,13 +37,24 @@
       max-width: 480px;
       border-radius: 12px;
       overflow: hidden;
+      background-color: #000;
     }
-    #webcam { display: none; }
-    #output_canvas {
+    /* 【核心修正】絕對不隱藏 video！直接讓原生相機鋪底，避開 iOS 的安全封鎖機制 */
+    #webcam {
       width: 100%;
       height: auto;
-      transform: scaleX(-1);
-      background-color: #111;
+      transform: scaleX(-1); /* 鏡像翻轉 */
+      display: block;
+    }
+    /* 畫布純粹用來疊加綠線，絕對不處理相機渲染 */
+    #output_canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1); /* 保持同步鏡像 */
+      pointer-events: none; /* 讓點擊穿透 */
     }
     #status-msg {
       margin: 5px 0;
@@ -57,7 +66,7 @@
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v9</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v10</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -65,11 +74,11 @@
     <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在啟動相機串流...</div>
+  <div id="status-msg">正在載入 AI 大腦...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
-    <canvas id="output_canvas" width="480" height="360"></canvas>
+    <canvas id="output_canvas"></canvas>
   </div>
 
   <script>
@@ -86,7 +95,6 @@
     let isCorrecting = false;
     let correctStartTime = null;
     const HOLD_TIME = 1000; 
-    let detector;
 
     function speak(text) {
       if ('speechSynthesis' in window) {
@@ -108,117 +116,108 @@
     function drawLine(pt1, pt2) {
       if (!pt1 || !pt2) return;
       canvasCtx.beginPath();
-      canvasCtx.moveTo(pt1.x, pt1.y);
-      canvasCtx.lineTo(pt2.x, pt2.y);
+      canvasCtx.moveTo(pt1.x * canvasElement.width, pt1.y * canvasElement.height);
+      canvasCtx.lineTo(pt2.x * canvasElement.width, pt2.y * canvasElement.height);
       canvasCtx.strokeStyle = '#00FF00';
       canvasCtx.lineWidth = 4;
       canvasCtx.stroke();
     }
 
-    async function detectionLoop() {
-      if (videoElement.readyState >= 2 && detector) {
-        canvasCtx.save();
-        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+    // 當 AI 成功抓到骨架時
+    function onResults(results) {
+      statusMsg.innerText = "請面向鏡頭舉手架拍";
+      
+      // 同步畫布與原生影片的尺寸（防位移）
+      canvasElement.width = videoElement.videoWidth;
+      canvasElement.height = videoElement.videoHeight;
 
-        // 呼叫極速 BlazePose 進行骨架提取
-        const poses = await detector.estimatePoses(videoElement, { maxPoses: 1, flipHorizontal: false });
+      // 每次清空畫布，只畫綠色的骨架線
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-        if (poses && poses.length > 0) {
-          statusMsg.innerText = "請面向鏡頭舉手架拍";
-          const kp = poses[0].keypoints;
-          
-          // 建立快速索引對照表
-          const lm = {};
-          kp.forEach(point => {
-            if (point.score > 0.3) {
-              lm[point.name] = { x: point.x, y: point.y };
-            }
-          });
+      if (results.poseLandmarks) {
+        const lm = results.poseLandmarks;
+        
+        // 撈出關鍵點 (11左肩, 12右肩, 13左肘, 14右肘, 15左腕, 16右腕)
+        const leftShoulder = lm[11];
+        const rightShoulder = lm[12];
+        const leftElbow = lm[13];
+        const rightElbow = lm[14];
+        const leftWrist = lm[15];
+        const rightWrist = lm[16];
 
-          // 繪製視覺化骨架
-          drawLine(lm['left_shoulder'], lm['left_elbow']);
-          drawLine(lm['left_elbow'], lm['left_wrist']);
-          drawLine(lm['right_shoulder'], lm['right_elbow']);
-          drawLine(lm['right_elbow'], lm['right_wrist']);
-          drawLine(lm['left_shoulder'], lm['right_shoulder']);
+        // 繪製骨架
+        drawLine(leftShoulder, leftElbow);
+        drawLine(leftElbow, leftWrist);
+        drawLine(rightShoulder, rightElbow);
+        drawLine(rightElbow, rightWrist);
+        drawLine(leftShoulder, rightShoulder);
 
-          if (lm['left_shoulder'] && lm['left_elbow'] && lm['left_wrist'] &&
-              lm['right_shoulder'] && lm['right_elbow'] && lm['right_wrist']) {
-              
-            const leftAngle = calculateAngle(lm['left_shoulder'], lm['left_elbow'], lm['left_wrist']);
-            const rightAngle = calculateAngle(lm['right_shoulder'], lm['right_elbow'], lm['right_wrist']);
+        if (leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
+          const leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
+          const rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
 
-            leftAngleTxt.innerText = leftAngle + "°";
-            rightAngleTxt.innerText = rightAngle + "°";
+          leftAngleTxt.innerText = leftAngle + "°";
+          rightAngleTxt.innerText = rightAngle + "°";
 
-            // 巢狀安全判斷結構
-            if (leftAngle >= 65) {
-              if (leftAngle <= 120) {
-                if (rightAngle >= 65) {
-                  if (rightAngle <= 120) {
-                    statusMsg.innerText = "姿勢正確！請維持住...";
-                    statusMsg.style.color = "#4caf50";
+          // 巢狀安全判斷結構
+          if (leftAngle >= 70) {
+            if (leftAngle <= 115) {
+              if (rightAngle >= 70) {
+                if (rightAngle <= 115) {
+                  statusMsg.innerText = "姿勢正確！請維持住...";
+                  statusMsg.style.color = "#4caf50";
 
-                    if (isCorrecting === false) {
-                      isCorrecting = true;
-                      correctStartTime = Date.now();
-                    } else {
-                      if (Date.now() - correctStartTime >= HOLD_TIME) {
-                        score = score + 1;
-                        scoreVal.innerText = score;
-                        speak("架拍正確");
-                        isCorrecting = false;
-                        correctStartTime = null;
-                      }
+                  if (isCorrecting === false) {
+                    isCorrecting = true;
+                    correctStartTime = Date.now();
+                  } else {
+                    if (Date.now() - correctStartTime >= HOLD_TIME) {
+                      score = score + 1;
+                      scoreVal.innerText = score;
+                      speak("架拍正確");
+                      isCorrecting = false;
+                      correctStartTime = null;
                     }
-                    canvasCtx.restore();
-                    requestAnimationFrame(detectionLoop);
-                    return;
                   }
+                  return;
                 }
               }
             }
           }
         }
-        canvasCtx.restore();
       }
       isCorrecting = false;
       correctStartTime = null;
       statusMsg.style.color = "#ff5722";
-      requestAnimationFrame(detectionLoop);
     }
 
-    async function main() {
-      try {
-        // 先強行將手機鏡頭打開，保證流暢度
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: false
-        });
-        videoElement.srcObject = stream;
-        
-        statusMsg.innerText = "相機已成功連線，正在啟動極速 AI...";
+    // 【核心修正】使用與對方完全一致的 MediaPipe Pose 初始化參數
+    const pose = new Pose({
+      locateFile: (file) => `https://jsdelivr.net{file}`
+    });
 
-        // 載入完全不踩跨網域紅線的輕量化前端辨識引擎
-        detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.BlazePose,
-          { runtime: 'mediapipe', modelType: 'lite', solutionPath: 'https://jsdelivr.net' }
-        );
+    pose.setOptions({
+      modelComplexity: 0, // 0 速度最快，專為手機優化
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    pose.onResults(onResults);
 
-        videoElement.onloadedmetadata = () => {
-          canvasElement.width = videoElement.videoWidth;
-          canvasElement.height = videoElement.videoHeight;
-          statusMsg.innerText = "系統已就緒！請向後退一步";
-          detectionLoop();
-        };
-      } catch (err) {
-        statusMsg.innerText = "啟動發生硬體衝突，請刷新頁面！";
-        console.error(err);
+    // 【核心修正】利用 MediaPipe 官方最穩定、能強制喚醒 iOS 原生鏡頭的 Camera 工具
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await pose.send({ image: videoElement });
       }
-    }
+    });
 
-    window.addEventListener('DOMContentLoaded', main);
+    // 啟動相機
+    camera.start().then(() => {
+      statusMsg.innerText = "相機已啟動，載入模型中...";
+    }).catch(err => {
+      statusMsg.innerText = "相機啟動失敗，請清除授權紀錄再試！";
+      console.error(err);
+    });
   </script>
 </body>
 </html>
