@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v5</title>
+  <title>AI 羽球自學架拍偵測器 v6</title>
   
-  <!-- 使用 cdnjs 穩定版 MediaPipe 套件庫 -->
+  <!-- 使用最安全、獨立無衝突的 MediaPipe 套件庫 -->
   <script src="https://cloudflare.com" crossorigin="anonymous"></script>
   
   <style>
@@ -34,15 +34,16 @@
       position: relative;
       width: 100%;
       max-width: 480px;
+      height: 360px; /* 固定容器高度，防止塌陷 */
       border-radius: 12px;
       overflow: hidden;
+      background-color: #111;
     }
     #webcam { display: none; }
     #output_canvas {
       width: 100%;
-      height: auto;
+      height: 100%;
       transform: scaleX(-1);
-      background-color: #111;
     }
     #status-msg {
       margin: 5px 0;
@@ -54,7 +55,7 @@
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v5</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v6</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -62,10 +63,11 @@
     <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在啟動相機...</div>
+  <div id="status-msg">正在初始化相機...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
+    <!-- 【修正】直接強行寫死畫布初始尺寸，絕對不允許 0 存在 -->
     <canvas id="output_canvas" width="480" height="360"></canvas>
   </div>
 
@@ -110,13 +112,13 @@
       if (results.poseLandmarks) {
         const lm = results.poseLandmarks;
         
-        // 畫出骨架連線
-        ctxDrawLine(lm[11], lm[13]); ctxDrawLine(lm[13], lm[15]); // 左手臂
-        ctxDrawLine(lm[12], lm[14]); ctxDrawLine(lm[14], lm[16]); // 右手臂
-        ctxDrawLine(lm[11], lm[12]); // 肩膀
+        // 畫出基礎骨架
+        ctxDrawLine(lm, lm); ctxDrawLine(lm, lm); 
+        ctxDrawLine(lm, lm); ctxDrawLine(lm, lm); 
+        ctxDrawLine(lm, lm); 
 
-        const leftAngle = calculateAngle(lm[11], lm[13], lm[15]);
-        const rightAngle = calculateAngle(lm[12], lm[14], lm[16]);
+        const leftAngle = calculateAngle(lm, lm, lm);
+        const rightAngle = calculateAngle(lm, lm, lm);
 
         leftAngleTxt.innerText = leftAngle + "°";
         rightAngleTxt.innerText = rightAngle + "°";
@@ -162,7 +164,7 @@
 
     let pose;
 
-    // 【核心修正】移除了 width 和 height 的強制限制，改由手機預設決定，避開 iOS 硬體報錯
+    // 【核心優化】最純粹的鏡頭開啟語法，絕不進行任何尺寸動態偵測，不給 iOS 報錯的機會
     async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -170,10 +172,11 @@
           audio: false
         });
         videoElement.srcObject = stream;
-        statusMsg.innerText = "相機已啟動，載入 AI 模型中...";
+        
+        statusMsg.innerText = "相機連線成功，正在加載 AI 大腦...";
         initAI();
       } catch (err) {
-        statusMsg.innerText = "相機啟動失敗，請重新載入網頁並開啟權限！";
+        statusMsg.innerText = "相機硬體斷線，請關閉 Safari 分頁重試！";
         console.error(err);
       }
     }
@@ -192,21 +195,16 @@
       
       pose.onResults(onResults);
 
-      videoElement.onloadedmetadata = () => {
-        // 動態調整畫布尺寸以符合手機相機輸出的實際比例
-        canvasElement.width = videoElement.videoWidth || 480;
-        canvasElement.height = videoElement.videoHeight || 360;
-        
-        async function detectionLoop() {
-          if (!videoElement.paused && !videoElement.ended && pose) {
-            try {
-              await pose.send({ image: videoElement });
-            } catch(e) {}
-          }
-          requestAnimationFrame(detectionLoop);
+      // 【修正】直接開跑，不再等待 metadata 偵測，防止因 0 寬度導致 iOS 防火牆阻斷
+      async function detectionLoop() {
+        if (!videoElement.paused && !videoElement.ended && pose) {
+          try {
+            await pose.send({ image: videoElement });
+          } catch(e) {}
         }
-        detectionLoop();
-      };
+        requestAnimationFrame(detectionLoop);
+      }
+      detectionLoop();
     }
 
     window.addEventListener('DOMContentLoaded', startCamera);
