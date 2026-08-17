@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v2</title>
+  <title>AI 羽球自學架拍偵測器 v3</title>
   
-  <!-- 引入 Google MediaPipe 核心與姿態識別（移除不穩定的相機工具） -->
+  <!-- 引入最穩定的 MediaPipe 骨架偵測核心 -->
   <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
   <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
 
@@ -42,7 +42,7 @@
     #output_canvas {
       width: 100%;
       height: auto;
-      transform: scaleX(-1); /* 鏡像翻轉，像照鏡子 */
+      transform: scaleX(-1);
       background-color: #111;
     }
     #status-msg {
@@ -51,11 +51,11 @@
       font-weight: bold;
       color: #ff5722;
     }
-  </style>
+  </script>
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v2</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v3</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -66,7 +66,6 @@
   <div id="status-msg">正在要求相機權限...</div>
 
   <div id="video-container">
-    <!-- 加入 playsinline, muted, autoplay 是防止 iOS 黑屏與禁止播放的關鍵 -->
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="output_canvas" width="480" height="360"></canvas>
   </div>
@@ -104,7 +103,7 @@
     }
 
     function onResults(results) {
-      statusMsg.innerText = "請面向鏡鏡舉手架拍";
+      statusMsg.innerText = "請面向鏡頭舉手架拍";
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
@@ -120,88 +119,90 @@
         const leftWrist = results.poseLandmarks[15];
         const rightWrist = results.poseLandmarks[16];
 
-        const leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
+        if(leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
+          const leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
+          const rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
 
-        leftAngleTxt.innerText = leftAngle + "°";
-        rightAngleTxt.innerText = rightAngle + "°";
+          leftAngleTxt.innerText = leftAngle + "°";
+          rightAngleTxt.innerText = rightAngle + "°";
 
-        // 架拍寬鬆標準設定在 70° ~ 115°
-        const isLeftValid = (leftAngle >= 70 && leftAngle <= 115);
-        const isRightValid = (rightAngle >= 70 && rightAngle <= 115);
+          const isLeftValid = (leftAngle >= 70 && leftAngle <= 115);
+          const isRightValid = (rightAngle >= 70 && rightAngle <= 115);
 
-        if (isRightValid && isLeftValid) {
-          statusMsg.innerText = "姿勢正確！請維持住...";
-          statusMsg.style.color = "#4caf50";
+          if (isRightValid && isLeftValid) {
+            statusMsg.innerText = "姿勢正確！請維持住...";
+            statusMsg.style.color = "#4caf50";
 
-          if (!isCorrecting) {
-            isCorrecting = true;
-            correctStartTime = Date.now();
-          } else {
-            const duration = Date.now() - correctStartTime;
-            if (duration >= HOLD_TIME) {
-              score++;
-              scoreVal.innerText = score;
-              speak("架拍正確");
-              isCorrecting = false; 
-              correctStartTime = null;
+            if (!isCorrecting) {
+              isCorrecting = true;
+              correctStartTime = Date.now();
+            } else {
+              const duration = Date.now() - correctStartTime;
+              if (duration >= HOLD_TIME) {
+                score++;
+                scoreVal.innerText = score;
+                speak("架拍正確");
+                isCorrecting = false; 
+                correctStartTime = null;
+              }
             }
+          } else {
+            isCorrecting = false;
+            correctStartTime = null;
+            statusMsg.style.color = "#ff5722";
           }
-        } else {
-          isCorrecting = false;
-          correctStartTime = null;
-          statusMsg.style.color = "#ff5722";
         }
       }
       canvasCtx.restore();
     }
 
-    // 初始化 MediaPipe Pose 模型
-    const pose = new Pose({
-      locateFile: (file) => `https://jsdelivr.net{file}`
-    });
+    // 先宣告變數，不急著在最一開始初始化模型
+    let pose;
 
-    pose.setOptions({
-      modelComplexity: 0, // 改用 0 (速度最快，專為手機優化，防止黑屏卡死)
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-    pose.onResults(onResults);
-
-    // 【核心修正】使用原生網頁語法呼叫相機，100% 觸發手機瀏覽器權限彈窗
+    // 【終極修正】第一步：網頁載入後，100% 先行強迫呼叫相機權限
     async function startCamera() {
       try {
-        const constraints = {
-          video: {
-            facingMode: 'user', // 強制使用前鏡頭
-            width: { ideal: 480 },
-            height: { ideal: 360 }
-          },
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: 480, height: 360 },
           audio: false
-        };
-        
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        });
         videoElement.srcObject = stream;
         
-        // 當影片開播時，持續把畫面丟給 AI 運算
-        videoElement.onloadedmetadata = () => {
-          statusMsg.innerText = "AI 模型載入中...";
-          async function detectionLoop() {
-            if (!videoElement.paused && !videoElement.ended) {
-              await pose.send({ image: videoElement });
-            }
-            requestAnimationFrame(detectionLoop); // 迴圈偵測
-          }
-          detectionLoop();
-        };
+        // 相機成功開啟後，第二步：才在背景默默啟動 AI 模型
+        statusMsg.innerText = "相機已啟動，正在載入 AI 骨架模型...";
+        initAI();
       } catch (err) {
-        statusMsg.innerText = "相機開啟失敗，請確認已允許權限！";
+        statusMsg.innerText = "相機要求被拒絕，請清除瀏覽器權限紀錄再試！";
         console.error(err);
       }
     }
 
-    // 頁面載入後自動啟動
+    // 第三步：模型載入完成後，開跑偵測迴圈
+    function initAI() {
+      pose = new Pose({
+        locateFile: (file) => `https://jsdelivr.net{file}`
+      });
+
+      pose.setOptions({
+        modelComplexity: 0, 
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      
+      pose.onResults(onResults);
+
+      videoElement.onloadedmetadata = () => {
+        async function detectionLoop() {
+          if (!videoElement.paused && !videoElement.ended && pose) {
+            await pose.send({ image: videoElement });
+          }
+          requestAnimationFrame(detectionLoop);
+        }
+        detectionLoop();
+      };
+    }
+
     window.addEventListener('DOMContentLoaded', startCamera);
   </script>
 </body>
