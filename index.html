@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v3</title>
+  <title>AI 羽球自學架拍偵測器 v4</title>
   
-  <!-- 引入最穩定的 MediaPipe 骨架偵測核心 -->
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-
+  <!-- 【修正】改用目前最新、保證有檔案的 cdnjs 穩定版 MediaPipe 套件庫 -->
+  <script src="https://cloudflare.com" crossorigin="anonymous"></script>
+  
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -51,11 +50,11 @@
       font-weight: bold;
       color: #ff5722;
     }
-  </script>
+  </style>
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v3</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v4</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -109,57 +108,63 @@
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
       if (results.poseLandmarks) {
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
-        drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+        // 使用原生畫法代替 drawing_utils 防止二次崩潰
+        const lm = results.poseLandmarks;
+        
+        // 畫出關鍵手部線條（左肩11, 左肘13, 左腕15）
+        ctxDrawLine(lm[11], lm[13]); ctxDrawLine(lm[13], lm[15]);
+        // 畫出關鍵手部線條（右肩12, 右肘14, 右腕16）
+        ctxDrawLine(lm[12], lm[14]); ctxDrawLine(lm[14], lm[16]);
+        // 畫肩膀連線
+        ctxDrawLine(lm[11], lm[12]);
 
-        const leftShoulder = results.poseLandmarks[11];
-        const rightShoulder = results.poseLandmarks[12];
-        const leftElbow = results.poseLandmarks[13];
-        const rightElbow = results.poseLandmarks[14];
-        const leftWrist = results.poseLandmarks[15];
-        const rightWrist = results.poseLandmarks[16];
+        const leftAngle = calculateAngle(lm[11], lm[13], lm[15]);
+        const rightAngle = calculateAngle(lm[12], lm[14], lm[16]);
 
-        if(leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
-          const leftAngle = calculateAngle(leftShoulder, leftElbow, leftWrist);
-          const rightAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
+        leftAngleTxt.innerText = leftAngle + "°";
+        rightAngleTxt.innerText = rightAngle + "°";
 
-          leftAngleTxt.innerText = leftAngle + "°";
-          rightAngleTxt.innerText = rightAngle + "°";
+        const isLeftValid = (leftAngle >= 70 && leftAngle <= 115);
+        const isRightValid = (rightAngle >= 70 && rightAngle <= 115);
 
-          const isLeftValid = (leftAngle >= 70 && leftAngle <= 115);
-          const isRightValid = (rightAngle >= 70 && rightAngle <= 115);
+        if (isRightValid && isLeftValid) {
+          statusMsg.innerText = "姿勢正確！請維持住...";
+          statusMsg.style.color = "#4caf50";
 
-          if (isRightValid && isLeftValid) {
-            statusMsg.innerText = "姿勢正確！請維持住...";
-            statusMsg.style.color = "#4caf50";
-
-            if (!isCorrecting) {
-              isCorrecting = true;
-              correctStartTime = Date.now();
-            } else {
-              const duration = Date.now() - correctStartTime;
-              if (duration >= HOLD_TIME) {
-                score++;
-                scoreVal.innerText = score;
-                speak("架拍正確");
-                isCorrecting = false; 
-                correctStartTime = null;
-              }
-            }
+          if (!isCorrecting) {
+            isCorrecting = true;
+            correctStartTime = Date.now();
           } else {
-            isCorrecting = false;
-            correctStartTime = null;
-            statusMsg.style.color = "#ff5722";
+            const duration = Date.now() - correctStartTime;
+            if (duration >= HOLD_TIME) {
+              score++;
+              scoreVal.innerText = score;
+              speak("架拍正確");
+              isCorrecting = false; 
+              correctStartTime = null;
+            }
           }
+        } else {
+          isCorrecting = false;
+          correctStartTime = null;
+          statusMsg.style.color = "#ff5722";
         }
       }
       canvasCtx.restore();
     }
 
-    // 先宣告變數，不急著在最一開始初始化模型
+    function ctxDrawLine(pt1, pt2) {
+      if(!pt1 || !pt2) return;
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(pt1.x * canvasElement.width, pt1.y * canvasElement.height);
+      canvasCtx.lineTo(pt2.x * canvasElement.width, pt2.y * canvasElement.height);
+      canvasCtx.strokeStyle = '#00FF00';
+      canvasCtx.lineWidth = 4;
+      canvasCtx.stroke();
+    }
+
     let pose;
 
-    // 【終極修正】第一步：網頁載入後，100% 先行強迫呼叫相機權限
     async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -167,20 +172,18 @@
           audio: false
         });
         videoElement.srcObject = stream;
-        
-        // 相機成功開啟後，第二步：才在背景默默啟動 AI 模型
-        statusMsg.innerText = "相機已啟動，正在載入 AI 骨架模型...";
+        statusMsg.innerText = "相機已啟動，載入 AI 模型中...";
         initAI();
       } catch (err) {
-        statusMsg.innerText = "相機要求被拒絕，請清除瀏覽器權限紀錄再試！";
+        statusMsg.innerText = "相機啟動失敗，請確認隱私權限！";
         console.error(err);
       }
     }
 
-    // 第三步：模型載入完成後，開跑偵測迴圈
     function initAI() {
+      // 【修正】將動態模型下載點，導向穩定且仍在服役的 cdnjs 加載點
       pose = new Pose({
-        locateFile: (file) => `https://jsdelivr.net{file}`
+        locateFile: (file) => `https://cloudflare.com{file}`
       });
 
       pose.setOptions({
@@ -195,7 +198,9 @@
       videoElement.onloadedmetadata = () => {
         async function detectionLoop() {
           if (!videoElement.paused && !videoElement.ended && pose) {
-            await pose.send({ image: videoElement });
+            try {
+              await pose.send({ image: videoElement });
+            } catch(e) {}
           }
           requestAnimationFrame(detectionLoop);
         }
