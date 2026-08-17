@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v4</title>
+  <title>AI 羽球自學架拍偵測器 v5</title>
   
-  <!-- 【修正】改用目前最新、保證有檔案的 cdnjs 穩定版 MediaPipe 套件庫 -->
+  <!-- 使用 cdnjs 穩定版 MediaPipe 套件庫 -->
   <script src="https://cloudflare.com" crossorigin="anonymous"></script>
   
   <style>
@@ -54,7 +54,7 @@
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v4</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v5</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -62,7 +62,7 @@
     <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在要求相機權限...</div>
+  <div id="status-msg">正在啟動相機...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
@@ -108,15 +108,12 @@
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
       if (results.poseLandmarks) {
-        // 使用原生畫法代替 drawing_utils 防止二次崩潰
         const lm = results.poseLandmarks;
         
-        // 畫出關鍵手部線條（左肩11, 左肘13, 左腕15）
-        ctxDrawLine(lm[11], lm[13]); ctxDrawLine(lm[13], lm[15]);
-        // 畫出關鍵手部線條（右肩12, 右肘14, 右腕16）
-        ctxDrawLine(lm[12], lm[14]); ctxDrawLine(lm[14], lm[16]);
-        // 畫肩膀連線
-        ctxDrawLine(lm[11], lm[12]);
+        // 畫出骨架連線
+        ctxDrawLine(lm[11], lm[13]); ctxDrawLine(lm[13], lm[15]); // 左手臂
+        ctxDrawLine(lm[12], lm[14]); ctxDrawLine(lm[14], lm[16]); // 右手臂
+        ctxDrawLine(lm[11], lm[12]); // 肩膀
 
         const leftAngle = calculateAngle(lm[11], lm[13], lm[15]);
         const rightAngle = calculateAngle(lm[12], lm[14], lm[16]);
@@ -165,23 +162,23 @@
 
     let pose;
 
+    // 【核心修正】移除了 width 和 height 的強制限制，改由手機預設決定，避開 iOS 硬體報錯
     async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: 480, height: 360 },
+          video: { facingMode: 'user' }, 
           audio: false
         });
         videoElement.srcObject = stream;
         statusMsg.innerText = "相機已啟動，載入 AI 模型中...";
         initAI();
       } catch (err) {
-        statusMsg.innerText = "相機啟動失敗，請確認隱私權限！";
+        statusMsg.innerText = "相機啟動失敗，請重新載入網頁並開啟權限！";
         console.error(err);
       }
     }
 
     function initAI() {
-      // 【修正】將動態模型下載點，導向穩定且仍在服役的 cdnjs 加載點
       pose = new Pose({
         locateFile: (file) => `https://cloudflare.com{file}`
       });
@@ -196,6 +193,10 @@
       pose.onResults(onResults);
 
       videoElement.onloadedmetadata = () => {
+        // 動態調整畫布尺寸以符合手機相機輸出的實際比例
+        canvasElement.width = videoElement.videoWidth || 480;
+        canvasElement.height = videoElement.videoHeight || 360;
+        
         async function detectionLoop() {
           if (!videoElement.paused && !videoElement.ended && pose) {
             try {
