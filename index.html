@@ -3,7 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v12</title>
+  <title>AI 羽球自學架拍偵測器 v13</title>
+  
+  <!-- 【核心修正】引入專為手機瀏覽器優化的極輕量、免下載大模型 TensorFlow 組合 -->
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -35,43 +42,63 @@
       background-color: #111;
       box-shadow: 0 8px 16px rgba(0,0,0,0.5);
     }
-    /* 【終極修正】強制顯示原生視訊，絕不隱藏！打破所有黑屏魔咒 */
+    /* 保持 v12 的神級鋪底，100% 亮起相機 */
     #webcam {
       width: 100%;
       height: auto;
       transform: scaleX(-1);
       display: block;
     }
+    /* 畫布絕對不影響相機，純粹透明疊加在鏡頭上方畫骨架 */
+    #output_canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      pointer-events: none;
+    }
     #status-msg {
       margin: 5px 0;
       font-size: 1rem;
       font-weight: bold;
-      color: #4caf50;
+      color: #ff5722;
     }
   </style>
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v12</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v13</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
-    <div class="data-box">左肘角度<span id="left-angle">90°</span></div>
-    <div class="data-box">右肘角度<span id="right-angle">90°</span></div>
+    <div class="data-box">左肘角度<span id="left-angle">-°</span></div>
+    <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在啟動原生相機...</div>
+  <div id="status-msg">正在要求原生相機權限...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
   </div>
 
   <script>
     const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
     const scoreVal = document.getElementById('score-val');
+    const leftAngleTxt = document.getElementById('left-angle');
+    const rightAngleTxt = document.getElementById('right-angle');
     const statusMsg = document.getElementById('status-msg');
 
     let score = 0;
+    let isCorrecting = false;
+    let correctStartTime = null;
+    const HOLD_TIME = 1000; 
+    let detector;
 
     function speak(text) {
       if ('speechSynthesis' in window) {
@@ -83,25 +110,112 @@
       }
     }
 
-    // 完全不使用任何外部 AI 套件，純粹啟動手機硬體串流
+    function calculateAngle(A, B, C) {
+      const radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
+      let angle = Math.abs((radians * 180.0) / Math.PI);
+      if (angle > 180.0) angle = 360 - angle;
+      return Math.round(angle);
+    }
+
+    function drawLine(pt1, pt2) {
+      if (!pt1 || !pt2) return;
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(pt1.x, pt1.y);
+      canvasCtx.lineTo(pt2.x, pt2.y);
+      canvasCtx.strokeStyle = '#00FF00';
+      canvasCtx.lineWidth = 5; // 骨架加粗，看得更清楚
+      canvasCtx.stroke();
+    }
+
+    // AI 核心動態識別迴圈
+    async function detectionLoop() {
+      if (videoElement.readyState >= 2 && detector) {
+        // 清空畫布，準備繪製綠線
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // 偵測人體關鍵點
+        const poses = await detector.estimatePoses(videoElement, { maxPoses: 1, flipHorizontal: false });
+
+        if (poses && poses.length > 0) {
+          statusMsg.innerText = "⚡ AI 已接通！請舉手架拍 ⚡";
+          statusMsg.style.color = "#4caf50";
+          
+          const kp = poses[0].keypoints;
+          const lm = {};
+          kp.forEach(point => {
+            if (point.score > 0.3) {
+              lm[point.name] = { x: point.x, y: point.y };
+            }
+          });
+
+          // 在畫布上疊加綠色骨架
+          drawLine(lm['left_shoulder'], lm['left_elbow']);
+          drawLine(lm['left_elbow'], lm['left_wrist']);
+          drawLine(lm['right_shoulder'], lm['right_elbow']);
+          drawLine(lm['right_elbow'], lm['right_wrist']);
+          drawLine(lm['left_shoulder'], lm['right_shoulder']);
+
+          if (lm['left_shoulder'] && lm['left_elbow'] && lm['left_wrist'] &&
+              lm['right_shoulder'] && lm['right_elbow'] && lm['right_wrist']) {
+              
+            const leftAngle = calculateAngle(lm['left_shoulder'], lm['left_elbow'], lm['left_wrist']);
+            const rightAngle = calculateAngle(lm['right_shoulder'], lm['right_elbow'], lm['right_wrist']);
+
+            leftAngleTxt.innerText = leftAngle + "°";
+            rightAngleTxt.innerText = rightAngle + "°";
+
+            // 寬鬆發力架構：70° ~ 115°
+            if (leftAngle >= 70 && leftAngle <= 115 && rightAngle >= 70 && rightAngle <= 115) {
+              statusMsg.innerText = "🔥 姿勢正確！請維持住 🔥";
+              statusMsg.style.color = "#4caf50";
+
+              if (isCorrecting === false) {
+                isCorrecting = true;
+                correctStartTime = Date.now();
+              } else {
+                if (Date.now() - correctStartTime >= HOLD_TIME) {
+                  score = score + 1;
+                  scoreVal.innerText = score;
+                  speak("架拍正確");
+                  isCorrecting = false;
+                  correctStartTime = null;
+                }
+              }
+              requestAnimationFrame(detectionLoop);
+              return;
+            }
+          }
+        }
+      }
+      isCorrecting = false;
+      correctStartTime = null;
+      requestAnimationFrame(detectionLoop);
+    }
+
     async function startCamera() {
       try {
+        // 1. 100% 成功點亮 v12 的原生相機
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: false
         });
         videoElement.srcObject = stream;
         
-        videoElement.onloadedmetadata = () => {
-          statusMsg.innerText = "⚡ 鏡頭已接通！請舉手架拍 ⚡";
+        videoElement.onloadedmetadata = async () => {
+          canvasElement.width = videoElement.videoWidth;
+          canvasElement.height = videoElement.videoHeight;
+          statusMsg.innerText = "鏡頭已開啟，正在接通手機 AI 晶片...";
           
-          // 模擬定時語音測試，確保發聲元件正常
-          setTimeout(() => {
-            speak("相機已就緒");
-          }, 1000);
+          // 2. 鏡頭亮起後，才在背景瞬間加載不卡連線的 PoseNet 引擎
+          detector = await poseDetection.createDetector(
+            poseDetection.SupportedModels.PoseNet,
+            { quantBytes: 2, architecture: 'MobileNetV1', outputStride: 16, inputResolution: { width: 257, height: 257 }, multiplier: 0.5 }
+          );
+          
+          detectionLoop();
         };
       } catch (err) {
-        statusMsg.innerText = "鏡頭開不起來，請重新整理網頁！";
+        statusMsg.innerText = "相機連線失敗，請重新載入！";
         console.error(err);
       }
     }
