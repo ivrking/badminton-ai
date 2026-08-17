@@ -3,14 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v13</title>
-  
-  <!-- 【核心修正】引入專為手機瀏覽器優化的極輕量、免下載大模型 TensorFlow 組合 -->
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-  <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
-
+  <title>AI 羽球自學架拍偵測器 v14</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -31,8 +24,8 @@
       padding: 8px 15px;
       border-radius: 8px;
     }
-    .data-box { text-align: center; font-size: 0.9rem; }
-    .data-box span { display: block; font-size: 1.5rem; font-weight: bold; color: #ffeb3b; }
+    .data-box { text-align: center; font-size: 1rem; }
+    .data-box span { display: block; font-size: 1.8rem; font-weight: bold; color: #ffeb3b; }
     #video-container {
       position: relative;
       width: 100%;
@@ -42,15 +35,13 @@
       background-color: #111;
       box-shadow: 0 8px 16px rgba(0,0,0,0.5);
     }
-    /* 保持 v12 的神級鋪底，100% 亮起相機 */
     #webcam {
       width: 100%;
       height: auto;
-      transform: scaleX(-1);
+      transform: scaleX(-1); /* 鏡像翻轉 */
       display: block;
     }
-    /* 畫布絕對不影響相機，純粹透明疊加在鏡頭上方畫骨架 */
-    #output_canvas {
+    #overlay_canvas {
       position: absolute;
       top: 0;
       left: 0;
@@ -61,44 +52,43 @@
     }
     #status-msg {
       margin: 5px 0;
-      font-size: 1rem;
+      font-size: 1.1rem;
       font-weight: bold;
-      color: #ff5722;
+      color: #ffeb3b;
     }
   </style>
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v13</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v14</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
-    <div class="data-box">左肘角度<span id="left-angle">-°</span></div>
-    <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在要求原生相機權限...</div>
+  <div id="status-msg">正在啟動感應鏡頭...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
-    <canvas id="output_canvas"></canvas>
+    <canvas id="overlay_canvas"></canvas>
   </div>
 
   <script>
     const videoElement = document.getElementById('webcam');
-    const canvasElement = document.getElementById('output_canvas');
+    const canvasElement = document.getElementById('overlay_canvas');
     const canvasCtx = canvasElement.getContext('2d');
-    
     const scoreVal = document.getElementById('score-val');
-    const leftAngleTxt = document.getElementById('left-angle');
-    const rightAngleTxt = document.getElementById('right-angle');
     const statusMsg = document.getElementById('status-msg');
 
     let score = 0;
-    let isCorrecting = false;
+    let isZone1Filled = false;
+    let isZone2Filled = false;
     let correctStartTime = null;
-    const HOLD_TIME = 1000; 
-    let detector;
+    let isCorrecting = false;
+    const HOLD_TIME = 1000; // 維持 1 秒
+
+    // 瀏覽器影像快照（用來做像素動態動態比對）
+    let lastFramePixels = null;
 
     function speak(text) {
       if ('speechSynthesis' in window) {
@@ -110,114 +100,122 @@
       }
     }
 
-    function calculateAngle(A, B, C) {
-      const radians = Math.atan2(C.y - B.y, C.x - B.x) - Math.atan2(A.y - B.y, A.x - B.x);
-      let angle = Math.abs((radians * 180.0) / Math.PI);
-      if (angle > 180.0) angle = 360 - angle;
-      return Math.round(angle);
-    }
-
-    function drawLine(pt1, pt2) {
-      if (!pt1 || !pt2) return;
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(pt1.x, pt1.y);
-      canvasCtx.lineTo(pt2.x, pt2.y);
-      canvasCtx.strokeStyle = '#00FF00';
-      canvasCtx.lineWidth = 5; // 骨架加粗，看得更清楚
-      canvasCtx.stroke();
-    }
-
-    // AI 核心動態識別迴圈
-    async function detectionLoop() {
-      if (videoElement.readyState >= 2 && detector) {
-        // 清空畫布，準備繪製綠線
-        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
-        // 偵測人體關鍵點
-        const poses = await detector.estimatePoses(videoElement, { maxPoses: 1, flipHorizontal: false });
-
-        if (poses && poses.length > 0) {
-          statusMsg.innerText = "⚡ AI 已接通！請舉手架拍 ⚡";
-          statusMsg.style.color = "#4caf50";
-          
-          const kp = poses[0].keypoints;
-          const lm = {};
-          kp.forEach(point => {
-            if (point.score > 0.3) {
-              lm[point.name] = { x: point.x, y: point.y };
-            }
-          });
-
-          // 在畫布上疊加綠色骨架
-          drawLine(lm['left_shoulder'], lm['left_elbow']);
-          drawLine(lm['left_elbow'], lm['left_wrist']);
-          drawLine(lm['right_shoulder'], lm['right_elbow']);
-          drawLine(lm['right_elbow'], lm['right_wrist']);
-          drawLine(lm['left_shoulder'], lm['right_shoulder']);
-
-          if (lm['left_shoulder'] && lm['left_elbow'] && lm['left_wrist'] &&
-              lm['right_shoulder'] && lm['right_elbow'] && lm['right_wrist']) {
-              
-            const leftAngle = calculateAngle(lm['left_shoulder'], lm['left_elbow'], lm['left_wrist']);
-            const rightAngle = calculateAngle(lm['right_shoulder'], lm['right_elbow'], lm['right_wrist']);
-
-            leftAngleTxt.innerText = leftAngle + "°";
-            rightAngleTxt.innerText = rightAngle + "°";
-
-            // 寬鬆發力架構：70° ~ 115°
-            if (leftAngle >= 70 && leftAngle <= 115 && rightAngle >= 70 && rightAngle <= 115) {
-              statusMsg.innerText = "🔥 姿勢正確！請維持住 🔥";
-              statusMsg.style.color = "#4caf50";
-
-              if (isCorrecting === false) {
-                isCorrecting = true;
-                correctStartTime = Date.now();
-              } else {
-                if (Date.now() - correctStartTime >= HOLD_TIME) {
-                  score = score + 1;
-                  scoreVal.innerText = score;
-                  speak("架拍正確");
-                  isCorrecting = false;
-                  correctStartTime = null;
-                }
-              }
-              requestAnimationFrame(detectionLoop);
-              return;
-            }
-          }
-        }
-      }
-      isCorrecting = false;
-      correctStartTime = null;
-      requestAnimationFrame(detectionLoop);
-    }
-
     async function startCamera() {
       try {
-        // 1. 100% 成功點亮 v12 的原生相機
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: false
         });
         videoElement.srcObject = stream;
         
-        videoElement.onloadedmetadata = async () => {
+        videoElement.onloadedmetadata = () => {
           canvasElement.width = videoElement.videoWidth;
           canvasElement.height = videoElement.videoHeight;
-          statusMsg.innerText = "鏡頭已開啟，正在接通手機 AI 晶片...";
-          
-          // 2. 鏡頭亮起後，才在背景瞬間加載不卡連線的 PoseNet 引擎
-          detector = await poseDetection.createDetector(
-            poseDetection.SupportedModels.PoseNet,
-            { quantBytes: 2, architecture: 'MobileNetV1', outputStride: 16, inputResolution: { width: 257, height: 257 }, multiplier: 0.5 }
-          );
-          
-          detectionLoop();
+          statusMsg.innerText = "請退後，將雙手肘填滿兩個綠色感應框！";
+          statusMsg.style.color = "#4caf50";
+          speak("系統已就緒");
+          processFrame();
         };
       } catch (err) {
-        statusMsg.innerText = "相機連線失敗，請重新載入！";
+        statusMsg.innerText = "鏡頭啟動失敗，請刷新重試！";
         console.error(err);
       }
+    }
+
+    function processFrame() {
+      if (videoElement.readyState >= 2) {
+        // 1. 建立一個隱藏的臨時畫布來抓取目前鏡頭的像素點
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvasElement.width;
+        tempCanvas.height = canvasElement.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
+        
+        const currentFrameData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        const pixels = currentFrameData.data;
+
+        // 2. 清空主畫面疊加層
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // 3. 定義正手架拍時，左右手肘應該要在的兩個「幾何感應框」位置（寬度 80, 高度 80）
+        const zoneW = 80;
+        const zoneH = 80;
+        
+        // 左手肘感應框位置 (畫面左側偏上)
+        const zone1 = { x: 50, y: Math.floor(canvasElement.height * 0.3) };
+        // 右手肘感應框位置 (畫面右側偏上)
+        const zone2 = { x: canvasElement.width - 50 - zoneW, y: Math.floor(canvasElement.height * 0.3) };
+
+        // 4. 計算感應框內的動態變化率（像素差值演算法）
+        let zone1Changes = 0;
+        let zone2Changes = 0;
+
+        if (lastFramePixels) {
+          // 檢查 Zone 1
+          for (let y = zone1.y; y < zone1.y + zoneH; y++) {
+            for (let x = zone1.x; x < zone1.x + zoneW; x++) {
+              const idx = (y * canvasElement.width + x) * 4;
+              const diff = Math.abs(pixels[idx] - lastFramePixels[idx]); // 紅色通道差值
+              if (diff > 25) zone1Changes++;
+            }
+          }
+          // 檢查 Zone 2
+          for (let y = zone2.y; y < zone2.y + zoneH; y++) {
+            for (let x = zone2.x; x < zone2.x + zoneW; x++) {
+              const idx = (y * canvasElement.width + x) * 4;
+              const diff = Math.abs(pixels[idx] - lastFramePixels[idx]);
+              if (diff > 25) zone2Changes++;
+            }
+          }
+        }
+
+        // 保存當前影格像素
+        lastFramePixels = pixels;
+
+        // 當格子裡有物體（你的手臂）移入並定格（動態變化率在 5% 到 30% 之間穩定時）
+        const z1Filled = zone1Changes > 150 && zone1Changes < 1500;
+        const z2Filled = zone2Changes > 150 && zone2Changes < 1500;
+
+        // 5. 在畫面上繪製半透明引導框
+        canvasCtx.lineWidth = 4;
+        
+        // 畫左框
+        canvasCtx.strokeStyle = z1Filled ? '#00FF00' : 'rgba(255, 0, 0, 0.5)';
+        canvasCtx.fillStyle = z1Filled ? 'rgba(0, 255, 0, 0.2)' : 'rgba(255, 0, 0, 0.1)';
+        canvasCtx.fillRect(zone1.x, zone1.y, zoneW, zoneH);
+        canvasCtx.strokeRect(zone1.x, zone1.y, zoneW, zoneH);
+
+        // 畫右框
+        canvasCtx.strokeStyle = z2Filled ? '#00FF00' : 'rgba(255, 0, 0, 0.5)';
+        canvasCtx.fillStyle = z2Filled ? 'rgba(0, 255, 0, 0.2)' : 'rgba(255, 0, 0, 0.1)';
+        canvasCtx.fillRect(zone2.x, zone2.y, zoneW, zoneH);
+        canvasCtx.strokeRect(zone2.x, zone2.y, zoneW, zoneH);
+
+        // 6. 架拍定格秒數計時邏輯
+        if (z1Filled && z2Filled) {
+          statusMsg.innerText = "🔥 對準了！請保持定格 1 秒 🔥";
+          statusMsg.style.color = "#00FF00";
+
+          if (!isCorrecting) {
+            isCorrecting = true;
+            correctStartTime = Date.now();
+          } else {
+            if (Date.now() - correctStartTime >= HOLD_TIME) {
+              score++;
+              scoreVal.innerText = score;
+              speak("架拍正確");
+              isCorrecting = false;
+              correctStartTime = null;
+            }
+          }
+        } else {
+          isCorrecting = false;
+          correctStartTime = null;
+          statusMsg.innerText = "請後退，將雙手肘放入綠色感應框中";
+          statusMsg.style.color = "#ffeb3b";
+        }
+      }
+      requestAnimationFrame(processFrame);
     }
 
     window.addEventListener('DOMContentLoaded', startCamera);
