@@ -3,11 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>AI 羽球自學架拍偵測器 v6</title>
+  <title>AI 羽球自學架拍偵測器 v7</title>
   
-  <!-- 使用最安全、獨立無衝突的 MediaPipe 套件庫 -->
-  <script src="https://cloudflare.com" crossorigin="anonymous"></script>
-  
+  <!-- 改用手機相容性最高、內建自給自足大腦的 TensorFlow.js 骨架偵測套件 -->
+  <script src="https://jsdelivr.net"></script>
+  <script src="https://jsdelivr.net"></script>
+  <script src="https://jsdelivr.net"></script>
+  <script src="https://jsdelivr.net"></script>
+
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -34,16 +37,15 @@
       position: relative;
       width: 100%;
       max-width: 480px;
-      height: 360px; /* 固定容器高度，防止塌陷 */
       border-radius: 12px;
       overflow: hidden;
-      background-color: #111;
     }
     #webcam { display: none; }
     #output_canvas {
       width: 100%;
-      height: 100%;
+      height: auto;
       transform: scaleX(-1);
+      background-color: #111;
     }
     #status-msg {
       margin: 5px 0;
@@ -55,7 +57,7 @@
 </head>
 <body>
 
-  <h1>🏸 AI 羽球自學架拍偵測器 v6</h1>
+  <h1>🏸 AI 羽球自學架拍偵測器 v7</h1>
   
   <div id="dashboard">
     <div class="data-box">正確次數<span id="score-val">0</span></div>
@@ -63,11 +65,10 @@
     <div class="data-box">右肘角度<span id="right-angle">-°</span></div>
   </div>
 
-  <div id="status-msg">正在初始化相機...</div>
+  <div id="status-msg">正在載入 AI 模型...</div>
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
-    <!-- 【修正】直接強行寫死畫布初始尺寸，絕對不允許 0 存在 -->
     <canvas id="output_canvas" width="480" height="360"></canvas>
   </div>
 
@@ -85,6 +86,7 @@
     let isCorrecting = false;
     let correctStartTime = null;
     const HOLD_TIME = 1000; 
+    let detector;
 
     function speak(text) {
       if ('speechSynthesis' in window) {
@@ -103,57 +105,19 @@
       return Math.round(angle);
     }
 
-    function onResults(results) {
-      statusMsg.innerText = "請面向鏡頭舉手架拍";
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-      if (results.poseLandmarks) {
-        const lm = results.poseLandmarks;
-        
-        // 畫出基礎骨架
-        ctxDrawLine(lm, lm); ctxDrawLine(lm, lm); 
-        ctxDrawLine(lm, lm); ctxDrawLine(lm, lm); 
-        ctxDrawLine(lm, lm); 
-
-        const leftAngle = calculateAngle(lm, lm, lm);
-        const rightAngle = calculateAngle(lm, lm, lm);
-
-        leftAngleTxt.innerText = leftAngle + "°";
-        rightAngleTxt.innerText = rightAngle + "°";
-
-        const isLeftValid = (leftAngle >= 70 && leftAngle <= 115);
-        const isRightValid = (rightAngle >= 70 && rightAngle <= 115);
-
-        if (isRightValid && isLeftValid) {
-          statusMsg.innerText = "姿勢正確！請維持住...";
-          statusMsg.style.color = "#4caf50";
-
-          if (!isCorrecting) {
-            isCorrecting = true;
-            correctStartTime = Date.now();
-          } else {
-            const duration = Date.now() - correctStartTime;
-            if (duration >= HOLD_TIME) {
-              score++;
-              scoreVal.innerText = score;
-              speak("架拍正確");
-              isCorrecting = false; 
-              correctStartTime = null;
-            }
-          }
-        } else {
-          isCorrecting = false;
-          correctStartTime = null;
-          statusMsg.style.color = "#ff5722";
+    // 將 17 個關鍵點陣列轉成可用物件
+    function mapKeypoints(keypoints) {
+      const map = {};
+      keypoints.forEach(kp => {
+        if (kp.score > 0.3) {
+          map[kp.name] = { x: kp.x / canvasElement.width, y: kp.y / canvasElement.height };
         }
-      }
-      canvasCtx.restore();
+      });
+      return map;
     }
 
-    function ctxDrawLine(pt1, pt2) {
-      if(!pt1 || !pt2) return;
+    function drawLine(pt1, pt2) {
+      if (!pt1 || !pt2) return;
       canvasCtx.beginPath();
       canvasCtx.moveTo(pt1.x * canvasElement.width, pt1.y * canvasElement.height);
       canvasCtx.lineTo(pt2.x * canvasElement.width, pt2.y * canvasElement.height);
@@ -162,52 +126,90 @@
       canvasCtx.stroke();
     }
 
-    let pose;
+    async function detectionLoop() {
+      if (videoElement.readyState >= 2 && detector) {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
 
-    // 【核心優化】最純粹的鏡頭開啟語法，絕不進行任何尺寸動態偵測，不給 iOS 報錯的機會
-    async function startCamera() {
+        const poses = await detector.estimatePoses(videoElement);
+
+        if (poses && poses.length > 0) {
+          statusMsg.innerText = "請面向鏡頭舉手架拍";
+          const lm = mapKeypoints(poses[0].keypoints);
+
+          // 畫出左右手骨架
+          drawLine(lm['left_shoulder'], lm['left_elbow']);
+          drawLine(lm['left_elbow'], lm['left_wrist']);
+          drawLine(lm['right_shoulder'], lm['right_elbow']);
+          drawLine(lm['right_elbow'], lm['right_wrist']);
+          drawLine(lm['left_shoulder'], lm['right_shoulder']);
+
+          if (lm['left_shoulder'] && lm['left_elbow'] && lm['left_wrist'] &&
+              lm['right_shoulder'] && lm['right_elbow'] && lm['right_wrist']) {
+              
+            const leftAngle = calculateAngle(lm['left_shoulder'], lm['left_elbow'], lm['left_wrist']);
+            const rightAngle = calculateAngle(lm['right_shoulder'], lm['right_elbow'], lm['right_wrist']);
+
+            leftAngleTxt.innerText = leftAngle + "°";
+            rightAngleTxt.innerText = rightAngle + "°";
+
+            if (leftAngle >= 70 && leftAngle <= 115 && rightAngle >= 70 && rightAngle <= 115) {
+              statusMsg.innerText = "姿勢正確！請維持住...";
+              statusMsg.style.color = "#4caf50";
+
+              if (!isCorrecting) {
+                isCorrecting = true;
+                correctStartTime = Date.now();
+              } else {
+                if (Date.now() - correctStartTime >= HOLD_TIME) {
+                  score++;
+                  scoreVal.innerText = score;
+                  speak("架拍正確");
+                  isCorrecting = false;
+                  correctStartTime = null;
+                }
+              }
+            } else {
+              isCorrecting = false;
+              correctStartTime = null;
+              statusMsg.style.color = "#ff5722";
+            }
+          }
+        }
+        canvasCtx.restore();
+      }
+      requestAnimationFrame(detectionLoop);
+    }
+
+    async function main() {
       try {
+        // 第一步：初始化不受網域限制的 MoveNet 模型
+        detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        );
+        
+        statusMsg.innerText = "模型載入成功！正在開啟鏡頭...";
+
+        // 第二步：向 Safari 索取鏡頭
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' }, 
+          video: { facingMode: 'user', width: 480, height: 360 },
           audio: false
         });
         videoElement.srcObject = stream;
         
-        statusMsg.innerText = "相機連線成功，正在加載 AI 大腦...";
-        initAI();
+        videoElement.onloadedmetadata = () => {
+          statusMsg.innerText = "系統就緒！請往後退";
+          detectionLoop();
+        };
       } catch (err) {
-        statusMsg.innerText = "相機硬體斷線，請關閉 Safari 分頁重試！";
+        statusMsg.innerText = "初始化失敗，請重新載入網頁！";
         console.error(err);
       }
     }
 
-    function initAI() {
-      pose = new Pose({
-        locateFile: (file) => `https://cloudflare.com{file}`
-      });
-
-      pose.setOptions({
-        modelComplexity: 0, 
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-      });
-      
-      pose.onResults(onResults);
-
-      // 【修正】直接開跑，不再等待 metadata 偵測，防止因 0 寬度導致 iOS 防火牆阻斷
-      async function detectionLoop() {
-        if (!videoElement.paused && !videoElement.ended && pose) {
-          try {
-            await pose.send({ image: videoElement });
-          } catch(e) {}
-        }
-        requestAnimationFrame(detectionLoop);
-      }
-      detectionLoop();
-    }
-
-    window.addEventListener('DOMContentLoaded', startCamera);
+    window.addEventListener('DOMContentLoaded', main);
   </script>
 </body>
 </html>
